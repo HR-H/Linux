@@ -1,0 +1,10 @@
+# 本仓库是公开的：只放工具代码，任何备份数据都不能提交到这里
+claude-backup/config.local.sh
+ClaudeBackup/
+exports/
+memory/
+*.zip
+data-*/
+__pycache__/
+*.pyc
+.DS_Store
