@@ -30,6 +30,10 @@ if [ -n "${ASSETS_REPO:-}" ]; then
       mkdir -p "$dest"
       rsync -a --delete --exclude '.git' "$src/" "$dest/"
     done
+    # 把最近一次导入的快照合并进仓库 archive/，记忆存档复制进 memory/
+    if ls "$BACKUP_ROOT"/exports/*/manifest.json >/dev/null 2>&1; then
+      python3 "$HERE/claude_backup.py" --root "$BACKUP_ROOT" publish "$ASSETS_REPO" || status=1
+    fi
     (
       cd "$ASSETS_REPO"
       git add -A

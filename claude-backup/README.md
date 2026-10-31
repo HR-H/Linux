@@ -9,8 +9,8 @@
 
 | 层级 | 内容 | 源头版本放在哪 | 本工具负责 |
 |---|---|---|---|
-| 1 自己沉淀的资产 | skill 源文件、Project instructions、项目知识文件、规则库、提示词模板 | 私有 GitHub 仓库（`ASSETS_REPO`）| `sync.sh` 镜像本地 skill 目录、提交并推送 |
-| 2 对话中的有效产出 | 定稿剧本、分镜、调试出的规则 | 产出当下另存为文档，归入资产仓库 | `import` 把导出转成可检索的 Markdown 留档 |
+| 1 自己沉淀的资产 | skill 源文件、Project instructions、项目知识文件、规则库、提示词模板 | 私有备份仓库 HR-H/Claudebak（`ASSETS_REPO`）| `sync.sh` 镜像本地 skill 目录、提交并推送 |
+| 2 对话中的有效产出 | 定稿剧本、分镜、调试出的规则 | 产出当下存进 Claudebak 的 `outputs/` | `import` 转成 Markdown，`publish` 按对话累积进 Claudebak 的 `archive/` |
 | 3 记忆 | Settings 里的记忆内容 | `BACKUP_ROOT/memory/` | `memory` 子命令按日期存档并比对差异 |
 | 4 原始导出包 | 官方 zip | `BACKUP_ROOT/exports/raw/` | `import` 原样保留并记录 sha256 |
 
@@ -31,13 +31,13 @@ cd ~/tools/claude-tools/claude-backup && cp config.example.sh config.local.sh
 
 编辑 `config.local.sh`，至少设置 `BACKUP_ROOT`，以及一个**不在本机硬盘上**的 `DESTINATIONS`（云盘同步目录或移动硬盘）。
 
-资产仓库（只需做一次）：在 GitHub 新建一个 **Private** 仓库，例如 `claude-assets`，然后：
+备份仓库（只需做一次）：clone 私有仓库 HR-H/Claudebak，目录结构和用法见该仓库的 README：
 
 ```bash
-git clone https://github.com/<你的用户名>/claude-assets.git ~/claude-assets
+git clone https://github.com/HR-H/Claudebak.git ~/claudebak
 ```
 
-把各个 skill 的源文件、各项目的 instructions 和知识文件整理进去。jimeng-storyboard-optimizer 已经有自己的仓库，可以用 git submodule 引入，或保持独立。
+把各个 skill 的源文件放进 `skills/`，各项目的 instructions 和知识文件放进 `projects/`。jimeng-storyboard-optimizer 已经有自己的仓库，可以用 git submodule 引入，或保持独立。
 
 ## 每周流程（约 5 分钟）
 
@@ -52,10 +52,12 @@ git clone https://github.com/<你的用户名>/claude-assets.git ~/claude-assets
    ```bash
    pbpaste | python3 claude_backup.py memory
    ```
-5. 同步到多个位置，并推送资产仓库：
+5. 同步到多个位置，并推送备份仓库：
    ```bash
    ./sync.sh
    ```
+   它会先执行 `publish`，把最近的快照合并进 Claudebak 的 `archive/`（按对话 UUID 累积，账号里删掉的对话保留并标记），
+   并把记忆存档复制进 `memory/`，然后提交并推送；原始 zip 不进 git，只同步到云盘/移动硬盘。
    只要有一个目的地失败、校验不一致，或者一份异地副本都没有，脚本就返回非零。
 
 完成重要工作后，额外跑一遍第 1–5 步。

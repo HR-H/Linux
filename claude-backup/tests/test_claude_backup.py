@@ -43,7 +43,7 @@ def make_zip(path, conversations, with_extras=True):
             zf.writestr("../evil.json", "{}")  # 不应被解压到外部
 
 
-class ImportTest(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
@@ -58,6 +58,8 @@ class ImportTest(unittest.TestCase):
             code = cb.main(["--root", str(self.root), *args])
         return code, buf.getvalue()
 
+
+class ImportTest(Base):
     def test_full_import_and_diff(self):
         z1 = self.dir / "export1.zip"
         make_zip(z1, [conv("aaaaaaaa-1", "分镜: 第一集?", "2026-10-01T09:00:00Z", MSGS),
@@ -122,6 +124,51 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("-偏好B", out)
         self.assertIn("+偏好C", out)
+
+
+class PublishTest(Base):
+    def test_publish_accumulates(self):
+        repo = self.dir / "claudebak"
+        (repo / ".git").mkdir(parents=True)
+        code, out = self.run_cli("publish", str(repo))
+        self.assertEqual(code, 1)  # 尚无快照
+
+        z1 = self.dir / "e1.zip"
+        make_zip(z1, [conv("aaaaaaaa-1", "旧标题", "2026-10-01T09:00:00Z", MSGS),
+                      conv("bbbbbbbb-2", "会被删", "2026-10-01T09:00:00Z", MSGS)])
+        self.run_cli("import", str(z1))
+        m = self.dir / "m.txt"
+        m.write_text("记忆1\n", encoding="utf-8")
+        self.run_cli("memory", "--from", str(m))
+        code, out = self.run_cli("publish", str(repo))
+        self.assertEqual(code, 0, out)
+        self.assertIn("新增 2", out)
+        self.assertTrue((repo / "archive" / "export-memory.md").exists())
+        self.assertEqual(len(list((repo / "memory").glob("*.md"))), 1)
+        self.assertTrue(any((repo / "archive" / "projects").iterdir()))
+
+        # 重复 publish 同一快照：不重复记录
+        self.run_cli("publish", str(repo))
+        hist = (repo / "archive" / "snapshots.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(hist), 1)
+
+        # 第二次：a 改名并更新，b 被删，c 新增
+        z2 = self.dir / "e2.zip"
+        make_zip(z2, [conv("aaaaaaaa-1", "新标题", "2026-10-05T09:00:00Z", MSGS),
+                      conv("cccccccc-3", "新的", "2026-10-05T09:00:00Z", MSGS)], with_extras=False)
+        self.run_cli("import", str(z2))
+        code, out = self.run_cli("publish", str(repo))
+        self.assertEqual(code, 0, out)
+        self.assertIn("新增 1，更新 1，新标记为账号中已删除 1，累计 3", out)
+
+        files = sorted(p.name for p in (repo / "archive" / "conversations").glob("*.md"))
+        self.assertEqual(len(files), 3, files)  # 旧文件名已移除，被删对话仍在
+        self.assertFalse(any("旧标题" in f for f in files))
+        catalog = json.loads((repo / "archive" / "catalog.json").read_text(encoding="utf-8"))
+        self.assertTrue(catalog["bbbbbbbb-2"]["deleted_in_account"])
+        self.assertEqual(catalog["aaaaaaaa-1"]["first_seen"], hist and json.loads(hist[0])["snapshot"])
+        self.assertIn("账号中已删除", (repo / "archive" / "index.md").read_text(encoding="utf-8"))
+        self.assertEqual(len((repo / "archive" / "snapshots.jsonl").read_text(encoding="utf-8").splitlines()), 2)
 
 
 if __name__ == "__main__":

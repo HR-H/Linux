@@ -5,6 +5,7 @@
   import <export.zip|目录>   导入官方导出包：保留原始 zip，转换为可读 Markdown，生成清单并与上次对比
   status [--max-age N]        查看最近一次备份；超过 N 天（默认 7）返回非零退出码，可用于定时提醒
   memory [--from FILE]        保存从 Settings 复制出的记忆文本（默认从标准输入读取），并与上一版对比
+  publish [仓库路径]          把最近快照按对话 UUID 累积合并进私有备份仓库（默认 ~/claudebak），不提交
 
 数据目录由 --root 或环境变量 CLAUDE_BACKUP_ROOT 指定，默认 ~/ClaudeBackup。
 数据目录不应放在公开仓库里。
@@ -349,6 +350,115 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- publish
+
+GITHUB_WARN_BYTES = 50 * 1024 * 1024  # GitHub 超过 50MB 警告，100MB 拒收
+
+
+def _write_archive_index(archive: Path, catalog: Dict[str, Dict[str, Any]]) -> None:
+    rows = []
+    for uid, info in sorted(catalog.items(), key=lambda kv: kv[1].get("updated_at", ""), reverse=True):
+        mark = " ⚠ 账号中已删除" if info.get("deleted_in_account") else ""
+        title = (info.get("name") or "（无标题）").replace("|", "/")
+        rows.append(f"| {pretty_time(info.get('updated_at'))} | [{title}]({info['file']}){mark} | "
+                    f"{info.get('messages', '')} |")
+    (archive / "index.md").write_text(
+        "# 对话索引（自动生成，勿手改）\n\n按最近更新排序。标记“账号中已删除”的对话仅存在于本备份。\n\n"
+        "| 更新时间 | 标题 | 消息数 |\n|---|---|---|\n" + "\n".join(rows) + "\n",
+        encoding="utf-8",
+    )
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """把最近一次导入的快照合并进备份仓库的 archive/，以及把记忆存档复制到 memory/。
+
+    对话按 UUID 累积：同一对话更新则覆盖（历史版本由 git 保留），账号里删掉的对话保留并标记。
+    不提交 git，提交由 sync.sh 完成。
+    """
+    root: Path = args.root
+    repo = Path(args.repo).expanduser().resolve()
+    if not (repo / ".git").exists():
+        print(f"{repo} 不是 git 仓库。")
+        return 1
+    snaps = sorted((root / "exports").glob("*/manifest.json"))
+    if not snaps:
+        print(f"{root} 下没有导入过的快照，先运行 import。")
+        return 1
+    snap_dir = snaps[-1].parent
+    manifest = json.loads(snaps[-1].read_text(encoding="utf-8"))
+
+    archive = repo / "archive"
+    conv_dir = archive / "conversations"
+    conv_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = archive / "catalog.json"
+    catalog: Dict[str, Dict[str, Any]] = (
+        json.loads(catalog_path.read_text(encoding="utf-8")) if catalog_path.exists() else {}
+    )
+    history_path = archive / "snapshots.jsonl"
+    published = set()
+    if history_path.exists():
+        published = {json.loads(l)["snapshot"] for l in history_path.read_text(encoding="utf-8").splitlines() if l}
+
+    added = updated = 0
+    current = manifest["conversations"]
+    for uid, info in current.items():
+        src = snap_dir / info["file"]
+        dest_rel = f"conversations/{Path(info['file']).name}"
+        old = catalog.get(uid)
+        if old and old.get("file") != dest_rel:
+            (archive / old["file"]).unlink(missing_ok=True)  # 对话改名：删旧文件名
+        if not old:
+            added += 1
+        elif old.get("updated_at") != info["updated_at"] or old.get("file") != dest_rel:
+            updated += 1
+        shutil.copy2(src, archive / dest_rel)
+        catalog[uid] = {
+            "name": info["name"], "updated_at": info["updated_at"], "messages": info["messages"],
+            "file": dest_rel, "first_seen": (old or {}).get("first_seen", manifest["snapshot"]),
+            "last_seen": manifest["snapshot"], "deleted_in_account": False,
+        }
+    newly_deleted = 0
+    for uid, info in catalog.items():
+        if uid not in current and not info.get("deleted_in_account"):
+            info["deleted_in_account"] = True
+            newly_deleted += 1
+
+    # 导出中的项目与记忆：镜像最新一份，供对照（源头版本在 projects/ 和 memory/）
+    if (snap_dir / "projects").exists():
+        shutil.rmtree(archive / "projects", ignore_errors=True)
+        shutil.copytree(snap_dir / "projects", archive / "projects")
+    if (snap_dir / "memory" / "memory.md").exists():
+        shutil.copy2(snap_dir / "memory" / "memory.md", archive / "export-memory.md")
+
+    copied_mem = 0
+    for mem in sorted((root / "memory").glob("*.md")):
+        target = repo / "memory" / mem.name
+        if not target.exists() or target.read_bytes() != mem.read_bytes():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(mem, target)
+            copied_mem += 1
+
+    catalog_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_archive_index(archive, catalog)
+    if manifest["snapshot"] not in published:
+        with history_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"snapshot": manifest["snapshot"], "imported_at": manifest["imported_at"],
+                                 "raw_sha256": (manifest.get("raw") or {}).get("sha256"),
+                                 "counts": manifest["counts"]}, ensure_ascii=False) + "\n")
+
+    big = [p for p in repo.rglob("*") if ".git" not in p.parts and p.is_file()
+           and p.stat().st_size > GITHUB_WARN_BYTES]
+    print(f"已合并快照 {manifest['snapshot']} → {repo}")
+    print(f"  对话: 新增 {added}，更新 {updated}，新标记为账号中已删除 {newly_deleted}，累计 {len(catalog)}")
+    print(f"  记忆存档复制 {copied_mem} 份")
+    if big:
+        print("  ⚠ 以下文件超过 50MB，GitHub 推送可能被拒（上限 100MB）：")
+        for p in big:
+            print(f"    - {p.relative_to(repo)} ({p.stat().st_size // (1024 * 1024)}MB)")
+        return 1
+    return 0
+
+
 # ---------------------------------------------------------------- cli
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -368,6 +478,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     p_mem = sub.add_parser("memory", help="保存手动复制的记忆文本")
     p_mem.add_argument("--from", dest="from_file")
     p_mem.set_defaults(func=cmd_memory)
+
+    p_pub = sub.add_parser("publish", help="把最近快照合并进备份仓库（如 Claudebak）")
+    p_pub.add_argument("repo", nargs="?", default=os.environ.get("CLAUDE_BACKUP_REPO", "~/claudebak"))
+    p_pub.set_defaults(func=cmd_publish)
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     return args.func(args)

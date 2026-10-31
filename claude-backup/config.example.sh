@@ -13,8 +13,9 @@ DESTINATIONS=(
 )
 
 # 资产源头仓库（skill 源文件、Project instructions、知识文件、提示词模板）。
-# 必须是私有 GitHub 仓库的本地 clone；留空则跳过。
-ASSETS_REPO="$HOME/claude-assets"
+# 必须是私有 GitHub 仓库的本地 clone（即 HR-H/Claudebak）；留空则跳过。
+# sync.sh 会先把最近一次导入的快照合并进它的 archive/，再提交推送。
+ASSETS_REPO="$HOME/claudebak"
 
 # 可选：要镜像进资产仓库的本地 skill 目录（空格分隔）。
 # 会镜像到 $ASSETS_REPO/skills/<上级目录名>-<目录名>/
